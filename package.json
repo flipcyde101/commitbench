@@ -1,0 +1,59 @@
+{
+  "name": "commitbench",
+  "version": "0.1.0",
+  "description": "Turn your own git history into a leak-proof benchmark for coding agents, models, and AGENTS.md prompts.",
+  "type": "module",
+  "license": "MIT",
+  "author": "flipcyde101",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flipcyde101/commitbench.git"
+  },
+  "homepage": "https://github.com/flipcyde101/commitbench#readme",
+  "bugs": {
+    "url": "https://github.com/flipcyde101/commitbench/issues"
+  },
+  "keywords": [
+    "benchmark",
+    "coding-agents",
+    "eval",
+    "git",
+    "llm",
+    "agents-md",
+    "ab-testing",
+    "swe-bench"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "commitbench": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run",
+    "test:unit": "vitest run",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.4"
+  }
+}
