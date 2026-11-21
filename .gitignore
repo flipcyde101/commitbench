@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Test and coverage
+coverage/
+
+# Local working directories and artifacts
+work/
+.commitbench/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.tgz
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.log
