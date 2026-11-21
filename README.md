@@ -4,6 +4,12 @@ Turn your own git history into a leak-proof benchmark for coding agents, models,
 
 Zero runtime dependencies. Zero native addons. Pure Node.js `>=24` (`node:sqlite` WAL run store + `git archive` isolated sandboxes).
 
+## 15-second demo
+
+[![Commitbench compares two agent variants across three fixture tasks](./docs/media/commitbench-poster.png)](./docs/media/commitbench-demo.mp4)
+
+[Open the demo video (MP4)](./docs/media/commitbench-demo.mp4)
+
 ## Why commitbench?
 
 Public coding benchmarks tell you how a model performs on popular open-source Python repos. They do not tell you whether a new model, harness flag, or `AGENTS.md` edit actually improves accuracy on **your** codebase, conventions, and real bug fixes.
