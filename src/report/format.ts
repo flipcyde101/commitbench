@@ -21,9 +21,27 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-function formatDelta(delta: number, suffix = ""): string {
+function formatDelta(delta: number, suffix = "", decimals?: number): string {
   const sign = delta > 0 ? "+" : "";
-  return `${sign}${delta}${suffix}`;
+  const formatted = decimals !== undefined ? delta.toFixed(decimals) : String(delta);
+  return `${sign}${formatted}${suffix}`;
+}
+
+function escapeMarkdownCell(input: string): string {
+  return input
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .trim();
+}
+
+function formatMarkdownCode(input: string): string {
+  const clean = input.replace(/[\r\n]+/g, " ");
+  const fence = clean.includes("`") ? "``" : "`";
+  const padded = clean.startsWith("`") || clean.endsWith("`") ? ` ${clean} ` : clean;
+  return `${fence}${padded}${fence}`;
 }
 
 function findResult(
@@ -108,7 +126,7 @@ export function formatTerminalReport(report: CompareReport): string {
         : "Tie";
 
   lines.push(
-    `  Delta (B vs A):  ${formatDelta(report.deltaPassedCount)} tasks (${formatDelta(report.deltaPassRate, "%")}) | Winner: ${winnerLabel}`,
+    `  Delta (B vs A):  ${formatDelta(report.deltaPassedCount)} tasks (${formatDelta(report.deltaPassRate, "%", 1)}) | Winner: ${winnerLabel}`,
   );
   lines.push(divider);
   lines.push("  Per-Task Breakdown:");
@@ -133,26 +151,26 @@ export function formatMarkdownReport(report: CompareReport): string {
   const [varA, varB] = report.variants;
   const winnerText =
     report.winner === "B"
-      ? `Variant B (${varB.variantLabel})`
+      ? `Variant B (${escapeMarkdownCell(varB.variantLabel)})`
       : report.winner === "A"
-        ? `Variant A (${varA.variantLabel})`
+        ? `Variant A (${escapeMarkdownCell(varA.variantLabel)})`
         : "Tie";
 
   const lines: string[] = [
     "## commitbench A/B Benchmark Report",
     "",
-    `- **Run ID**: \`${report.runId}\``,
+    `- **Run ID**: ${formatMarkdownCode(report.runId)}`,
     `- **Validated Tasks**: ${report.validTaskCount}/${report.taskCount}`,
-    `- **Test Command**: \`${report.testCommand}\``,
+    `- **Test Command**: ${formatMarkdownCode(report.testCommand)}`,
     `- **Git-Leak Audit**: ${report.leakViolationsTotal} git-leak violations`,
-    `- **Delta (B vs A)**: ${formatDelta(report.deltaPassedCount)} tasks (${formatDelta(report.deltaPassRate, "%")}) | **Winner**: ${winnerText}`,
+    `- **Delta (B vs A)**: ${formatDelta(report.deltaPassedCount)} tasks (${formatDelta(report.deltaPassRate, "%", 1)}) | **Winner**: ${winnerText}`,
     "",
     "### Variant Scorecard",
     "",
     "| Variant | Label | Passed | Pass Rate | Fail-to-Pass | Pass-to-Pass | Avg Agent Time | Leak Violations |",
     "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-    `| ${varA.variantId} | ${varA.variantLabel} | ${varA.passedCount}/${varA.totalCount} | ${varA.passRate.toFixed(1)}% | ${varA.failToPassCount}/${varA.totalCount} | ${varA.passToPassCount}/${varA.totalCount} | ${formatDuration(varA.avgAgentDurationMs)} | ${varA.leakViolationsCount} |`,
-    `| ${varB.variantId} | ${varB.variantLabel} | ${varB.passedCount}/${varB.totalCount} | ${varB.passRate.toFixed(1)}% | ${varB.failToPassCount}/${varB.totalCount} | ${varB.passToPassCount}/${varB.totalCount} | ${formatDuration(varB.avgAgentDurationMs)} | ${varB.leakViolationsCount} |`,
+    `| ${escapeMarkdownCell(varA.variantId)} | ${escapeMarkdownCell(varA.variantLabel)} | ${varA.passedCount}/${varA.totalCount} | ${varA.passRate.toFixed(1)}% | ${varA.failToPassCount}/${varA.totalCount} | ${varA.passToPassCount}/${varA.totalCount} | ${formatDuration(varA.avgAgentDurationMs)} | ${varA.leakViolationsCount} |`,
+    `| ${escapeMarkdownCell(varB.variantId)} | ${escapeMarkdownCell(varB.variantLabel)} | ${varB.passedCount}/${varB.totalCount} | ${varB.passRate.toFixed(1)}% | ${varB.failToPassCount}/${varB.totalCount} | ${varB.passToPassCount}/${varB.totalCount} | ${formatDuration(varB.avgAgentDurationMs)} | ${varB.leakViolationsCount} |`,
     "",
     "### Per-Task Results",
     "",
@@ -163,9 +181,9 @@ export function formatMarkdownReport(report: CompareReport): string {
   for (const task of report.tasks) {
     const resA = findResult(report.results, task.id, varA.variantId);
     const resB = findResult(report.results, task.id, varB.variantId);
-    const safeSubject = task.originalSubject.replace(/\|/g, "\\|");
+    const safeSubject = escapeMarkdownCell(task.originalSubject);
     lines.push(
-      `| \`${task.id}\` | \`${task.shortSha}\` | ${formatCellStatus(resA)} | ${formatCellStatus(resB)} | ${safeSubject} |`,
+      `| ${formatMarkdownCode(task.id)} | ${formatMarkdownCode(task.shortSha)} | ${formatCellStatus(resA)} | ${formatCellStatus(resB)} | ${safeSubject} |`,
     );
   }
 
@@ -187,8 +205,10 @@ export function formatHtmlReport(report: CompareReport): string {
       const resB = findResult(report.results, task.id, varB.variantId);
       const statusA = formatCellStatus(resA);
       const statusB = formatCellStatus(resB);
-      const badgeClassA = statusA === "PASS" ? "badge-pass" : "badge-fail";
-      const badgeClassB = statusB === "PASS" ? "badge-pass" : "badge-fail";
+      const badgeClassFor = (status: string) =>
+        status === "PASS" ? "badge-pass" : status === "SKIP" ? "badge-skip" : "badge-fail";
+      const badgeClassA = badgeClassFor(statusA);
+      const badgeClassB = badgeClassFor(statusB);
       const errNote = [
         resA?.error ? `A: ${resA.error}` : "",
         resB?.error ? `B: ${resB.error}` : "",
@@ -294,6 +314,7 @@ export function formatHtmlReport(report: CompareReport): string {
     }
     .badge-pass { background: var(--pass-bg); color: var(--pass-fg); }
     .badge-fail { background: var(--fail-bg); color: var(--fail-fg); }
+    .badge-skip { background: var(--border); color: var(--muted); }
     .muted { color: var(--muted); }
   </style>
 </head>
@@ -313,7 +334,7 @@ export function formatHtmlReport(report: CompareReport): string {
       </div>
       <div class="card">
         <div class="card-label">Delta (B vs A)</div>
-        <div class="card-value">${escapeHtml(formatDelta(report.deltaPassRate, "%"))}</div>
+        <div class="card-value">${escapeHtml(formatDelta(report.deltaPassRate, "%", 1))}</div>
       </div>
       <div class="card">
         <div class="card-label">Winner</div>

@@ -131,7 +131,7 @@ export function redactProblemStatement(params: {
   const { subject, body, sourceFiles, testFiles, fixSha, baseSha } = params;
 
   const trailerPattern =
-    /^(co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|change-id|cherry picked from):.*$/gim;
+    /^(?:(?:co-authored-by|signed-off-by|reviewed-by|acked-by|tested-by|reported-by|change-id|cherry picked from):.*|\(cherry picked from commit [0-9a-f]+\))$/gim;
 
   const combined = [subject.trim(), body.trim()]
     .filter((part) => part.length > 0)
@@ -177,8 +177,9 @@ export function redactProblemStatement(params: {
 
   const sortedSpoilers = [...spoilerTokens].sort((a, b) => b.length - a.length);
   for (const token of sortedSpoilers) {
+    const flexSep = escapeRegExp(token).replace(/\//g, "[/\\\\]");
     const pattern = new RegExp(
-      `(?<![a-zA-Z0-9_./-])${escapeRegExp(token)}(?![a-zA-Z0-9_/-]|\\.[a-zA-Z0-9_])`,
+      `(?<![a-zA-Z0-9_])(?:\\.\\.?[/\\\\]|[ab][/\\\\])?${flexSep}(?![a-zA-Z0-9_/-]|\\.[a-zA-Z0-9_])`,
       "gi",
     );
     cleaned = cleaned.replace(pattern, "[redacted-file]");
@@ -220,7 +221,7 @@ export function mineTasks(options: MineOptions): MinedTask[] {
 
   if (options.since !== undefined) {
     logArgs.push(`--since=${validateSinceValue(options.since)}`);
-  } else if (options.days !== undefined && options.days > 0) {
+  } else if (options.days !== undefined) {
     const days = validatePositiveInt("days", options.days, 1, 3650);
     logArgs.push(`--since=${days} days ago`);
   }
@@ -267,9 +268,23 @@ export function mineTasks(options: MineOptions): MinedTask[] {
       continue;
     }
 
-    const changedRaw = runGit(repoPath, ["diff", "--name-only", baseSha, fixSha]);
+    let changedRaw = "";
+    try {
+      changedRaw = runGit(repoPath, [
+        "-c",
+        "core.quotepath=false",
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        baseSha,
+        fixSha,
+      ]);
+    } catch {
+      continue;
+    }
     const changedFiles = changedRaw
-      .split(/\r?\n/)
+      .split("\0")
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
 
@@ -280,15 +295,25 @@ export function mineTasks(options: MineOptions): MinedTask[] {
       continue;
     }
 
-    const testPatch = runGit(repoPath, [
-      "diff",
-      "--no-color",
-      "--unified=3",
-      baseSha,
-      fixSha,
-      "--",
-      ...testFiles,
-    ]);
+    let testPatch = "";
+    try {
+      testPatch = runGit(repoPath, [
+        "-c",
+        "core.quotepath=false",
+        "diff",
+        "--no-color",
+        "--no-renames",
+        "--binary",
+        "--unified=3",
+        baseSha,
+        fixSha,
+        "--",
+        ...testFiles,
+      ]);
+    } catch {
+      // Skip commits whose test diff exceeds GIT_MAX_BUFFER (ENOBUFS)
+      continue;
+    }
 
     if (testPatch.trim().length === 0) {
       continue;
@@ -334,12 +359,29 @@ export function saveTasksFile(filePath: string, tasks: MinedTask[]): void {
   fs.writeFileSync(resolved, JSON.stringify({ version: 1, tasks }, null, 2), "utf8");
 }
 
+function validateTaskRecord(item: unknown, idx: number): MinedTask {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    throw new Error(`Invalid task at index ${idx}: expected object.`);
+  }
+  const rec = item as Record<string, unknown>;
+  const reqStrings = ["id", "baseSha", "fixSha", "problemStatement", "testPatch"] as const;
+  for (const key of reqStrings) {
+    if (typeof rec[key] !== "string" || (key !== "testPatch" && rec[key].trim().length === 0)) {
+      throw new Error(`Invalid task at index ${idx}: missing or invalid "${key}".`);
+    }
+  }
+  if (!Array.isArray(rec.testFiles) || !rec.testFiles.every((f) => typeof f === "string")) {
+    throw new Error(`Invalid task at index ${idx}: "testFiles" must be a string array.`);
+  }
+  return item as MinedTask;
+}
+
 export function loadTasksFile(filePath: string): MinedTask[] {
   const resolved = path.resolve(filePath);
   const content = fs.readFileSync(resolved, "utf8");
   const parsed: unknown = JSON.parse(content);
   if (Array.isArray(parsed)) {
-    return parsed as MinedTask[];
+    return parsed.map((item, idx) => validateTaskRecord(item, idx));
   }
   if (
     parsed &&
@@ -347,7 +389,7 @@ export function loadTasksFile(filePath: string): MinedTask[] {
     "tasks" in parsed &&
     Array.isArray((parsed as { tasks: unknown }).tasks)
   ) {
-    return (parsed as { tasks: MinedTask[] }).tasks;
+    return (parsed as { tasks: unknown[] }).tasks.map((item, idx) => validateTaskRecord(item, idx));
   }
   throw new Error(`Invalid tasks JSON file format: ${resolved}`);
 }

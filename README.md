@@ -68,8 +68,8 @@ Every variant command runs inside a fresh leak-proof workspace with two injected
 npx commitbench compare \
   --repo . \
   --tasks ./work/tasks.json \
-  --a "my-agent --prompt-file \"$COMMITBENCH_PROMPT_FILE\" --model baseline" \
-  --b "my-agent --prompt-file \"$COMMITBENCH_PROMPT_FILE\" --model candidate" \
+  --a 'my-agent --prompt-file "$COMMITBENCH_PROMPT_FILE" --model baseline' \
+  --b 'my-agent --prompt-file "$COMMITBENCH_PROMPT_FILE" --model candidate' \
   --label-a "Baseline prompt" \
   --label-b "New AGENTS.md" \
   --cmd "npm test" \
@@ -77,6 +77,8 @@ npx commitbench compare \
   --markdown \
   --html ./work/ab-report.html
 ```
+
+> Note: On Windows `cmd.exe`, reference `%COMMITBENCH_PROMPT_FILE%` instead of `$COMMITBENCH_PROMPT_FILE`. Because workspaces are exported via `git archive`, untracked `node_modules` are omitted (pass a `--cmd` that links/installs dependencies if your repo requires third-party packages).
 
 ### All Flags
 

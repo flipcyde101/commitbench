@@ -17,6 +17,7 @@ export interface StoredRunSummary {
 
 export class RunStore {
   private readonly db: DatabaseSync;
+  private closed = false;
   public readonly dbPath: string;
 
   constructor(dbPath: string) {
@@ -25,7 +26,12 @@ export class RunStore {
       fs.mkdirSync(path.dirname(path.resolve(dbPath)), { recursive: true });
     }
     this.db = new DatabaseSync(dbPath);
-    this.initSchema();
+    try {
+      this.initSchema();
+    } catch (err) {
+      this.close();
+      throw err;
+    }
   }
 
   private initSchema(): void {
@@ -117,7 +123,7 @@ export class RunStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
       insertRun.run(
         report.runId,
@@ -171,7 +177,11 @@ export class RunStore {
 
       this.db.exec("COMMIT");
     } catch (err) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore if SQLite already rolled back
+      }
       throw err;
     }
   }
@@ -262,6 +272,10 @@ export class RunStore {
   }
 
   public close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
     this.db.close();
   }
 }

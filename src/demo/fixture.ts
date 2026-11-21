@@ -353,7 +353,7 @@ export function createDemoFixture(baseTempDir?: string): DemoFixture {
     variantA,
     variantB,
     cleanup: () => {
-      fs.rmSync(rootDir, { recursive: true, force: true });
+      fs.rmSync(rootDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }
@@ -382,7 +382,7 @@ export async function runDemo(options?: { baseTempDir?: string }): Promise<Compa
       baseTempDir: fixture.rootDir,
     });
 
-    return report;
+    return { ...report, dbPath: undefined };
   } finally {
     fixture.cleanup();
   }

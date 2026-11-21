@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   applyTestPatch,
+  buildSanitizedEnv,
   createLeakProofWorkspace,
   getChangedFiles,
   resetTestFiles,
@@ -63,13 +64,14 @@ async function mapWithConcurrency<T, R>(
 
 export async function validateTask(
   task: MinedTask,
-  options: ValidateOptions,
+  options: ValidateOptions & { repoPath?: string },
 ): Promise<ValidationResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
+  const effectiveRepo = options.repoPath ?? task.repoPath;
 
-  // Phase 1: Confirm baseSha + hidden testPatch FAILS and workspace has zero git leaks.
-  const baseWs = createLeakProofWorkspace(task.repoPath, task.baseSha, {
-    prefix: `commitbench-val-base-${task.shortSha}-`,
+  // Phase 1: Confirm clean baseSha PASSES baseline tests, then baseSha + hidden testPatch FAILS, with zero git leaks.
+  const baseWs = createLeakProofWorkspace(effectiveRepo, task.baseSha, {
+    prefix: "commitbench-val-base-",
     baseTempDir: options.baseTempDir,
   });
 
@@ -86,23 +88,40 @@ export async function validateTask(
     if (!leak.passed) {
       reason = `Git leak check failed: ${leak.violations.join("; ")}`;
     } else {
-      const patchRes = applyTestPatch(baseWs.dir, task.testPatch);
-      if (!patchRes.applied) {
-        reason = `Failed to apply hidden testPatch onto baseSha: ${patchRes.error ?? "unknown error"}`;
+      // Verify clean baseSha baseline passes before applying hidden testPatch
+      const cleanBaseRun = await runCommandWithTimeout(options.testCommand, {
+        cwd: baseWs.dir,
+        timeoutMs,
+      });
+      if (cleanBaseRun.timedOut) {
+        baseExitCode = cleanBaseRun.exitCode;
+        baseDurationMs = cleanBaseRun.durationMs;
+        baseOutput = trimOutput(cleanBaseRun.stdout, cleanBaseRun.stderr);
+        reason = `Clean baseSha baseline test run timed out after ${timeoutMs}ms`;
+      } else if (cleanBaseRun.exitCode !== 0) {
+        baseExitCode = cleanBaseRun.exitCode;
+        baseDurationMs = cleanBaseRun.durationMs;
+        baseOutput = trimOutput(cleanBaseRun.stdout, cleanBaseRun.stderr);
+        reason = `Clean baseSha baseline tests already failed (exit code ${cleanBaseRun.exitCode})`;
       } else {
-        const baseRun = await runCommandWithTimeout(options.testCommand, {
-          cwd: baseWs.dir,
-          timeoutMs,
-        });
-        baseExitCode = baseRun.exitCode;
-        baseDurationMs = baseRun.durationMs;
-        baseOutput = trimOutput(baseRun.stdout, baseRun.stderr);
-        if (baseRun.timedOut) {
-          reason = `Base test run timed out after ${timeoutMs}ms`;
-        } else if (baseRun.exitCode === 0) {
-          reason = "Hidden testPatch passed on baseSha (test does not reproduce the bug)";
+        const patchRes = applyTestPatch(baseWs.dir, task.testPatch);
+        if (!patchRes.applied) {
+          reason = `Failed to apply hidden testPatch onto baseSha: ${patchRes.error ?? "unknown error"}`;
         } else {
-          baseFails = true;
+          const baseRun = await runCommandWithTimeout(options.testCommand, {
+            cwd: baseWs.dir,
+            timeoutMs,
+          });
+          baseExitCode = baseRun.exitCode;
+          baseDurationMs = baseRun.durationMs;
+          baseOutput = trimOutput(baseRun.stdout, baseRun.stderr);
+          if (baseRun.timedOut) {
+            reason = `Base test run timed out after ${timeoutMs}ms`;
+          } else if (baseRun.exitCode === 0) {
+            reason = "Hidden testPatch passed on baseSha (test does not reproduce the bug)";
+          } else {
+            baseFails = true;
+          }
         }
       }
     }
@@ -127,8 +146,8 @@ export async function validateTask(
   }
 
   // Phase 2: Confirm fixSha (which includes the fix + tests) PASSES cleanly.
-  const fixWs = createLeakProofWorkspace(task.repoPath, task.fixSha, {
-    prefix: `commitbench-val-fix-${task.shortSha}-`,
+  const fixWs = createLeakProofWorkspace(effectiveRepo, task.fixSha, {
+    prefix: "commitbench-val-fix-",
     baseTempDir: options.baseTempDir,
   });
 
@@ -174,26 +193,31 @@ export async function validateTask(
 
 async function runSingleVariantOnTask(params: {
   task: MinedTask;
+  taskIndex: number;
+  repoPath: string;
   variant: VariantSpec;
   testCommand: string;
   agentTimeoutMs: number;
   testTimeoutMs: number;
   baseTempDir?: string;
 }): Promise<TaskGradeResult> {
-  const { task, variant, testCommand, agentTimeoutMs, testTimeoutMs, baseTempDir } = params;
+  const { task, taskIndex, repoPath, variant, testCommand, agentTimeoutMs, testTimeoutMs, baseTempDir } = params;
 
-  const ws = createLeakProofWorkspace(task.repoPath, task.baseSha, {
-    prefix: `commitbench-run-${variant.id.toLowerCase()}-${task.shortSha}-`,
+  const opaqueTaskLabel = `task-${String(taskIndex + 1).padStart(3, "0")}`;
+  const ws = createLeakProofWorkspace(repoPath, task.baseSha, {
+    prefix: `commitbench-run-${variant.id.toLowerCase().replace(/[^a-z0-9_-]/g, "")}-`,
     baseTempDir,
   });
 
-  const promptDir = fs.mkdtempSync(
-    path.join(baseTempDir ? path.resolve(baseTempDir) : os.tmpdir(), "commitbench-prompt-"),
-  );
-  const promptFile = path.join(promptDir, `${task.id}.txt`);
-  fs.writeFileSync(promptFile, task.problemStatement, "utf8");
+  let promptDir: string | undefined;
 
   try {
+    promptDir = fs.mkdtempSync(
+      path.join(baseTempDir ? path.resolve(baseTempDir) : os.tmpdir(), "commitbench-prompt-"),
+    );
+    const promptFile = path.join(promptDir, "prompt.txt");
+    fs.writeFileSync(promptFile, task.problemStatement, "utf8");
+
     // Verify leak-proof isolation BEFORE invoking the coding agent.
     const leakBefore = verifyZeroGitLeak(ws.dir, task.fixSha);
     if (!leakBefore.passed) {
@@ -216,15 +240,15 @@ async function runSingleVariantOnTask(params: {
       };
     }
 
-    const agentEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+    // Do not expose fixSha / shortSha in agent env or paths; pass opaqueTaskLabel instead.
+    const agentEnv: NodeJS.ProcessEnv = buildSanitizedEnv(process.env, {
       ...variant.env,
       COMMITBENCH_PROMPT_FILE: promptFile,
       COMMITBENCH_WORKDIR: ws.dir,
-      COMMITBENCH_TASK_ID: task.id,
+      COMMITBENCH_TASK_ID: opaqueTaskLabel,
       COMMITBENCH_VARIANT_ID: variant.id,
       COMMITBENCH_VARIANT_LABEL: variant.label,
-    };
+    });
 
     const agentRun = await runCommandWithTimeout(variant.command, {
       cwd: ws.dir,
@@ -232,8 +256,29 @@ async function runSingleVariantOnTask(params: {
       env: agentEnv,
     });
 
-    const changedFiles = getChangedFiles(ws.dir);
     const gradeStartMs = Date.now();
+    let changedFiles: string[] = [];
+    try {
+      changedFiles = getChangedFiles(ws.dir, ws.initialCommitSha);
+    } catch (err) {
+      return {
+        taskId: task.id,
+        variantId: variant.id,
+        variantLabel: variant.label,
+        passed: false,
+        failToPass: false,
+        passToPass: false,
+        leakCheckPassed: true,
+        leakViolations: [],
+        agentExitCode: agentRun.exitCode,
+        agentTimedOut: agentRun.timedOut,
+        agentDurationMs: agentRun.durationMs,
+        gradeDurationMs: Date.now() - gradeStartMs,
+        changedFiles: [],
+        testPatchApplied: false,
+        error: `Post-agent workspace inspection failed (agent may have corrupted .git): ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
 
     if (agentRun.timedOut) {
       return {
@@ -256,8 +301,28 @@ async function runSingleVariantOnTask(params: {
       };
     }
 
-    // Reset any agent edits to hidden test files so agents cannot tamper with evaluation tests.
-    resetTestFiles(ws.dir, task.testFiles);
+    // Reset any agent edits/commits/additions to test files against initialCommitSha.
+    try {
+      resetTestFiles(ws.dir, task.testFiles, ws.initialCommitSha);
+    } catch (err) {
+      return {
+        taskId: task.id,
+        variantId: variant.id,
+        variantLabel: variant.label,
+        passed: false,
+        failToPass: false,
+        passToPass: false,
+        leakCheckPassed: true,
+        leakViolations: [],
+        agentExitCode: agentRun.exitCode,
+        agentTimedOut: false,
+        agentDurationMs: agentRun.durationMs,
+        gradeDurationMs: Date.now() - gradeStartMs,
+        changedFiles,
+        testPatchApplied: false,
+        error: `Failed to restore baseline test files: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
 
     // Step 1: pass_to_pass check on pre-existing baseline tests after agent's source edits.
     const baselineRun = await runCommandWithTimeout(testCommand, {
@@ -306,6 +371,13 @@ async function runSingleVariantOnTask(params: {
       error = `Hidden fail_to_pass test failed (exit code ${hiddenRun.exitCode})`;
     }
 
+    const combinedOutput = !passToPass
+      ? trimOutput(
+          `[baseline pass_to_pass]\n${baselineRun.stdout}\n${baselineRun.stderr}`,
+          `[hidden fail_to_pass]\n${hiddenRun.stdout}\n${hiddenRun.stderr}`,
+        )
+      : trimOutput(hiddenRun.stdout, hiddenRun.stderr);
+
     return {
       taskId: task.id,
       variantId: variant.id,
@@ -322,11 +394,13 @@ async function runSingleVariantOnTask(params: {
       changedFiles,
       testPatchApplied: true,
       error,
-      gradeOutput: trimOutput(hiddenRun.stdout, hiddenRun.stderr),
+      gradeOutput: combinedOutput,
     };
   } finally {
     ws.cleanup();
-    fs.rmSync(promptDir, { recursive: true, force: true });
+    if (promptDir) {
+      fs.rmSync(promptDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   }
 }
 
@@ -364,10 +438,15 @@ function summarizeVariant(
 }
 
 export async function compareVariants(options: CompareOptions): Promise<CompareReport> {
+  if (options.variantA.id === options.variantB.id) {
+    throw new Error(`variantA and variantB must have distinct IDs (both are "${options.variantA.id}").`);
+  }
+
   const concurrency = Math.max(1, Math.min(options.concurrency ?? 2, 16));
   const agentTimeoutMs = options.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
   const testTimeoutMs = options.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
   const validateFirst = options.validateFirst ?? true;
+  const resolvedRepoPath = path.resolve(options.repoPath);
 
   let validations: ValidationResult[] = [];
   let activeTasks = options.tasks;
@@ -375,6 +454,7 @@ export async function compareVariants(options: CompareOptions): Promise<CompareR
   if (validateFirst) {
     validations = await mapWithConcurrency(options.tasks, concurrency, (task) =>
       validateTask(task, {
+        repoPath: resolvedRepoPath,
         testCommand: options.testCommand,
         timeoutMs: testTimeoutMs,
         baseTempDir: options.baseTempDir,
@@ -387,18 +467,22 @@ export async function compareVariants(options: CompareOptions): Promise<CompareR
 
   interface Job {
     task: MinedTask;
+    taskIndex: number;
     variant: VariantSpec;
   }
 
   const jobs: Job[] = [];
-  for (const task of activeTasks) {
-    jobs.push({ task, variant: options.variantA });
-    jobs.push({ task, variant: options.variantB });
+  for (let i = 0; i < activeTasks.length; i++) {
+    const task = activeTasks[i]!;
+    jobs.push({ task, taskIndex: i, variant: options.variantA });
+    jobs.push({ task, taskIndex: i, variant: options.variantB });
   }
 
   const results = await mapWithConcurrency(jobs, concurrency, (job) =>
     runSingleVariantOnTask({
       task: job.task,
+      taskIndex: job.taskIndex,
+      repoPath: resolvedRepoPath,
       variant: job.variant,
       testCommand: options.testCommand,
       agentTimeoutMs,
@@ -420,12 +504,12 @@ export async function compareVariants(options: CompareOptions): Promise<CompareR
 
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomBytes(3).toString("hex")}`;
   const dbPath =
-    options.dbPath ?? path.join(path.resolve(options.repoPath), ".commitbench", "runs.sqlite");
+    options.dbPath ?? path.join(resolvedRepoPath, ".commitbench", "runs.sqlite");
 
   const report: CompareReport = {
     runId,
     createdAt: new Date().toISOString(),
-    repoPath: path.resolve(options.repoPath),
+    repoPath: resolvedRepoPath,
     testCommand: options.testCommand,
     taskCount: options.tasks.length,
     validTaskCount: activeTasks.length,

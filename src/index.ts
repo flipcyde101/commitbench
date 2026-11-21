@@ -41,4 +41,4 @@ export {
   formatTerminalReport,
 } from "./report/format.js";
 export { createDemoFixture, runDemo } from "./demo/fixture.js";
-export { runCli } from "./cli.js";
+export { runCli } from "./cli-app.js";

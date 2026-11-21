@@ -47,6 +47,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && vitest run",
     "test:unit": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test",
     "dev": "tsup --watch"
   },
   "dependencies": {},

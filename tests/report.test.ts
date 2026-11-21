@@ -169,7 +169,7 @@ describe("report formatters", () => {
     const terminal = formatTerminalReport(report);
     expect(terminal).toContain("commitbench A/B Scorecard");
     expect(terminal).toContain("0 git-leak violations");
-    expect(terminal).toContain("+50%");
+    expect(terminal).toContain("+50.0%");
     expect(terminal).not.toContain("\u2014");
 
     const markdown = formatMarkdownReport(report);
